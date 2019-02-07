@@ -103,11 +103,21 @@ typedef struct library {
     const char *name;
     void *base;
 } library_t;
-
+// helper function for something 100loc down
+// this finds the library in the list
+//
+// this is also a callback function called each
+// element in the list
+//
+// wait a minute, this smells like a closure
+// you know, without first class functions... kinda
+// c is weird
 bool search_library(void *pState, void *pData) {
     library_t *search = (library_t *) pState;
     library_t *current = (library_t *) pData;
 
+    // if the current element name is the search element name
+    // set the search base to the current base (reloc addr)
     if (!strcmp(search->name, current->name)) {
         search->base = current->base;
         dprint("FOUND! %s = %p\n", search->name, search->base);

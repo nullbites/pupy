@@ -24,12 +24,14 @@ import_module(const char *initfuncname, char *modname, const char *data, size_t 
     dprint("import_module: init=%s mod=%s (%p:%lu)\n",
            initfuncname, modname, data, size);
 
+    // get a handle to the module
     void *hmem=memdlopen(modname, data, size);
     if (!hmem) {
         dprint("Couldn't load %s: %m\n", modname);
         return false;
     }
 
+    // get a function pointer from our init module
     void (*do_init)() = dlsym(hmem, initfuncname);
     if (!do_init) {
         dprint("Couldn't find sym %s in %s: %m\n", initfuncname, modname);
@@ -37,6 +39,9 @@ import_module(const char *initfuncname, char *modname, const char *data, size_t 
         return false;
     }
 
+    // swap the context so the 
+    // package init is run in it's
+    // own namespace
     oldcontext = _Py_PackageContext;
     _Py_PackageContext = modname;
     dprint("Call %s@%s\n", initfuncname, modname);
@@ -47,7 +52,8 @@ import_module(const char *initfuncname, char *modname, const char *data, size_t 
 
     return true;
 }
-
+// c-python wrapper for
+// the above function call
 static PyObject *
 Py_import_module(PyObject *self, PyObject *args) {
     char *data;
@@ -81,6 +87,7 @@ get_verbose_flag(PyObject *self, PyObject *args)
     return PyInt_FromLong(Py_VerboseFlag);
 }
 
+// the exported table for 
 static PyMethodDef methods[] = {
     { "import_module", Py_import_module, METH_VARARGS,
       "import_module(data, size, initfuncname, path) -> module" },
