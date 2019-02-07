@@ -31,7 +31,7 @@ import_module(const char *initfuncname, char *modname, const char *data, size_t 
         return false;
     }
 
-    // get a function pointer from our init module
+    // get the init function pointer from our module
     void (*do_init)() = dlsym(hmem, initfuncname);
     if (!do_init) {
         dprint("Couldn't find sym %s in %s: %m\n", initfuncname, modname);
@@ -87,7 +87,7 @@ get_verbose_flag(PyObject *self, PyObject *args)
     return PyInt_FromLong(Py_VerboseFlag);
 }
 
-// the exported table for 
+// the exported table for pupy's python side to use
 static PyMethodDef methods[] = {
     { "import_module", Py_import_module, METH_VARARGS,
       "import_module(data, size, initfuncname, path) -> module" },
